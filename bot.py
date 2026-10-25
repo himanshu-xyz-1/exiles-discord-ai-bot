@@ -27,18 +27,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GUILD_ID = int(os.getenv("GUILD_ID", "1562425772231360586"))
 FOUNDER_AI_CHANNEL_ID = int(os.getenv("FOUNDER_AI_CHANNEL_ID", "1564050092070142197"))
 PORT = int(os.getenv("PORT", "7860"))
+ENABLE_MESSAGE_CONTENT = os.getenv("ENABLE_MESSAGE_CONTENT", "false").lower() == "true"
 
 # Important Channel IDs
 ANNOUNCEMENTS_CHANNEL_ID = 1562488082295562291
 SCRIM_DESK_CHANNEL_ID = 1562490539121709127
-
-# Initialize Discord Bot
-intents = discord.Intents.default()
-intents.messages = True
-intents.message_content = True
-intents.guilds = True
-
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Conversation history cache (channel_id -> list of turns)
 conversation_history = {}
@@ -89,9 +82,22 @@ async def query_gemini(messages_history: list) -> str:
     return "⚠️ Bhai, Gemini API se connect karne me dikkat aa rahi hai. Kuch second baad dobara try karo."
 
 
+intents = discord.Intents.default()
+intents.messages = True
+intents.guilds = True
+if ENABLE_MESSAGE_CONTENT:
+    intents.message_content = True
+    logger.info("Message Content Intent: ENABLED")
+else:
+    intents.message_content = False
+    logger.info("Message Content Intent: DISABLED (Bot responds to @mentions, DMs, and slash commands)")
+
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+
 @bot.event
 async def on_ready():
-    logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    logger.info(f"✅ Logged in successfully as {bot.user} (ID: {bot.user.id})")
     activity = discord.Activity(
         type=discord.ActivityType.watching,
         name="over EXILES Clan 🛡️"
@@ -106,11 +112,9 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignore bot's own messages
     if message.author.bot:
         return
 
-    # Check if message is in founder-ai channel OR mentions the bot OR is DM
     is_founder_channel = message.channel.id == FOUNDER_AI_CHANNEL_ID
     is_mentioned = bot.user.mentioned_in(message) and not message.mention_everyone
     is_dm = isinstance(message.channel, discord.DMChannel)
@@ -119,41 +123,33 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # Clean user content
     user_text = message.clean_content.replace(f"@{bot.user.name}", "").strip()
     if not user_text:
         return
 
-    # Maintain channel history
     cid = message.channel.id
     if cid not in conversation_history:
         conversation_history[cid] = []
 
-    # Append user turn
     conversation_history[cid].append({
         "role": "user",
         "parts": [{"text": user_text}]
     })
 
-    # Trim history
     if len(conversation_history[cid]) > MAX_HISTORY:
         conversation_history[cid] = conversation_history[cid][-MAX_HISTORY:]
 
-    # Trigger Discord typing indicator
     async with message.channel.typing():
         response_text = await query_gemini(conversation_history[cid])
 
-    # Append model reply to history
     conversation_history[cid].append({
         "role": "model",
         "parts": [{"text": response_text}]
     })
 
-    # Send response (handle Discord 2000-char limit)
     if len(response_text) <= 2000:
         await message.reply(response_text, mention_author=False)
     else:
-        # Split message into chunks
         chunks = []
         current = ""
         for line in response_text.split("\n"):
@@ -171,7 +167,6 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
-# Slash Command: Status
 @bot.tree.command(name="status", description="Check EXILES Bot latency and system status")
 async def cmd_status(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
@@ -187,10 +182,8 @@ async def cmd_status(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-# Slash Command: Quick Announcement
 @bot.tree.command(name="announce", description="Post an official clan announcement with @everyone ping")
 async def cmd_announce(interaction: discord.Interaction, title: str, message: str):
-    # Only Founder / Admins can announce
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Only Trigo or Clan Admins can post announcements.", ephemeral=True)
         return
@@ -212,7 +205,6 @@ async def cmd_announce(interaction: discord.Interaction, title: str, message: st
     await interaction.response.send_message(f"✅ Announcement posted in {channel.mention}!", ephemeral=True)
 
 
-# Slash Command: Scrim Desk
 @bot.tree.command(name="scrimdesk", description="Post room credentials in #scrim-desk")
 async def cmd_scrimdesk(interaction: discord.Interaction, match_time: str, room_id: str, password: str, notes: str = "Be on time."):
     if not interaction.user.guild_permissions.administrator:
@@ -236,7 +228,7 @@ async def cmd_scrimdesk(interaction: discord.Interaction, match_time: str, room_
     embed.add_field(name="📋 Instructions", value=notes, inline=False)
     embed.set_footer(text="EXILES Scrim Desk • All Lineups Ready")
 
-    await channel.send(content="<@&1562961690549551204>", embed=embed)  # Ping @Scrims Ping
+    await channel.send(content="<@&1562961690549551204>", embed=embed)
     await interaction.response.send_message(f"✅ Credentials posted in {channel.mention}!", ephemeral=True)
 
 
@@ -269,7 +261,6 @@ async def main():
         logger.error("DISCORD_TOKEN is missing! Please provide it in .env or environment.")
         sys.exit(1)
 
-    # Start both web server and discord bot concurrently
     await asyncio.gather(
         start_web_server(),
         bot.start(DISCORD_TOKEN)
