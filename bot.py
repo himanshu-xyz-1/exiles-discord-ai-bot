@@ -10,6 +10,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from system_prompt import SYSTEM_PROMPT
+from tools import DISCORD_TOOLS_SCHEMA, execute_tool
 
 # Configure logging
 logging.basicConfig(
@@ -27,9 +28,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GUILD_ID = int(os.getenv("GUILD_ID", "1562425772231360586"))
 FOUNDER_AI_CHANNEL_ID = int(os.getenv("FOUNDER_AI_CHANNEL_ID", "1564050092070142197"))
 PORT = int(os.getenv("PORT", "7860"))
-ENABLE_MESSAGE_CONTENT = os.getenv("ENABLE_MESSAGE_CONTENT", "false").lower() == "true"
+ENABLE_MESSAGE_CONTENT = os.getenv("ENABLE_MESSAGE_CONTENT", "true").lower() == "true"
 
-# Important Channel IDs
+# Channel IDs
 ANNOUNCEMENTS_CHANNEL_ID = 1562488082295562291
 SCRIM_DESK_CHANNEL_ID = 1562490539121709127
 
@@ -38,21 +39,21 @@ conversation_history = {}
 MAX_HISTORY = 12
 
 PRIMARY_MODEL = "gemini-3.5-flash"
-FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-flash-latest"]
 
 
-async def query_gemini(messages_history: list) -> str:
-    """Calls Google Gemini API with system instructions and chat history."""
+async def query_gemini_with_tools(bot_client: discord.Client, guild: discord.Guild, messages_history: list) -> str:
+    """Calls Gemini with Discord Function Calling tools enabled."""
     if not GEMINI_API_KEY:
-        return "⚠️ Gemini API Key configure nahi hai! Please set GEMINI_API_KEY in .env or Secrets."
+        return "⚠️ Gemini API Key is missing! Please configure GEMINI_API_KEY."
 
-    models_to_try = [PRIMARY_MODEL] + FALLBACK_MODELS
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{PRIMARY_MODEL}:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
         "system_instruction": {
             "parts": [{"text": SYSTEM_PROMPT}]
         },
         "contents": messages_history,
+        "tools": DISCORD_TOOLS_SCHEMA,
         "generationConfig": {
             "temperature": 0.7,
             "maxOutputTokens": 2048,
@@ -60,26 +61,72 @@ async def query_gemini(messages_history: list) -> str:
     }
 
     async with aiohttp.ClientSession() as session:
-        for model in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-            try:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            text_parts = [p.get("text", "") for p in parts if "text" in p]
-                            reply = "".join(text_parts).strip()
-                            if reply:
-                                return reply
-                    else:
-                        err_text = await resp.text()
-                        logger.warning(f"Model {model} returned status {resp.status}: {err_text[:200]}")
-            except Exception as e:
-                logger.error(f"Error querying Gemini model {model}: {e}")
+        try:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+                if resp.status != 200:
+                    err_text = await resp.text()
+                    logger.error(f"Gemini API Error {resp.status}: {err_text[:200]}")
+                    return "⚠️ Gemini API connect karne me error aaya. Kuch der baad retry karein."
 
-    return "⚠️ Bhai, Gemini API se connect karne me dikkat aa rahi hai. Kuch second baad dobara try karo."
+                data = await resp.json()
+                candidate = data.get("candidates", [{}])[0]
+                model_part = candidate.get("content", {}).get("parts", [{}])[0]
+
+                # Check if Gemini invoked a function call
+                if "functionCall" in model_part:
+                    func_call = model_part["functionCall"]
+                    func_name = func_call.get("name")
+                    func_args = func_call.get("args", {})
+                    call_id = func_call.get("id", "call_1")
+
+                    logger.info(f"Gemini decided to call tool: {func_name} with args {func_args}")
+
+                    # Execute the Discord tool
+                    tool_result = await execute_tool(bot_client, guild, func_name, func_args)
+
+                    # Feed the result back to Gemini
+                    followup_contents = list(messages_history)
+                    followup_contents.append({
+                        "role": "model",
+                        "parts": [model_part]
+                    })
+                    followup_contents.append({
+                        "role": "user",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": func_name,
+                                "response": tool_result,
+                                "id": call_id
+                            }
+                        }]
+                    })
+
+                    followup_payload = {
+                        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                        "contents": followup_contents,
+                        "tools": DISCORD_TOOLS_SCHEMA,
+                        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048}
+                    }
+
+                    async with session.post(url, json=followup_payload, timeout=aiohttp.ClientTimeout(total=25)) as resp2:
+                        if resp2.status == 200:
+                            data2 = await resp2.json()
+                            candidate2 = data2.get("candidates", [{}])[0]
+                            parts2 = candidate2.get("content", {}).get("parts", [])
+                            reply2 = "".join([p.get("text", "") for p in parts2 if "text" in p]).strip()
+                            if reply2:
+                                return reply2
+
+                    return f"✅ Action '{func_name}' execute ho gaya: {tool_result.get('result', tool_result.get('message', 'Done'))}"
+
+                # Normal text response
+                parts = candidate.get("content", {}).get("parts", [])
+                reply = "".join([p.get("text", "") for p in parts if "text" in p]).strip()
+                return reply if reply else "Main samajh nahi paya, dobara bolna?"
+
+        except Exception as e:
+            logger.error(f"Error calling Gemini: {e}")
+            return "⚠️ Gemini service temporary down hai ya timeout ho gaya. Ek baar dobara try karo."
 
 
 intents = discord.Intents.default()
@@ -90,7 +137,7 @@ if ENABLE_MESSAGE_CONTENT:
     logger.info("Message Content Intent: ENABLED")
 else:
     intents.message_content = False
-    logger.info("Message Content Intent: DISABLED (Bot responds to @mentions, DMs, and slash commands)")
+    logger.info("Message Content Intent: DISABLED")
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
@@ -139,8 +186,10 @@ async def on_message(message: discord.Message):
     if len(conversation_history[cid]) > MAX_HISTORY:
         conversation_history[cid] = conversation_history[cid][-MAX_HISTORY:]
 
+    guild = message.guild or bot.get_guild(GUILD_ID)
+
     async with message.channel.typing():
-        response_text = await query_gemini(conversation_history[cid])
+        response_text = await query_gemini_with_tools(bot, guild, conversation_history[cid])
 
     conversation_history[cid].append({
         "role": "model",
@@ -167,6 +216,7 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+# Slash Commands
 @bot.tree.command(name="status", description="Check EXILES Bot latency and system status")
 async def cmd_status(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
@@ -176,7 +226,7 @@ async def cmd_status(interaction: discord.Interaction):
         timestamp=datetime.utcnow()
     )
     embed.add_field(name="Ping / Latency", value=f"`{latency}ms`", inline=True)
-    embed.add_field(name="AI Model", value="`Gemini 3.5 Flash`", inline=True)
+    embed.add_field(name="AI Model", value="`Gemini 3.5 Flash (Function Calling Enabled)`", inline=True)
     embed.add_field(name="Cloud Hosting", value="`Online 24/7`", inline=True)
     embed.set_footer(text="EXILES Competitive Clan")
     await interaction.response.send_message(embed=embed)
@@ -232,7 +282,7 @@ async def cmd_scrimdesk(interaction: discord.Interaction, match_time: str, room_
     await interaction.response.send_message(f"✅ Credentials posted in {channel.mention}!", ephemeral=True)
 
 
-# Web Keep-Alive Server for Hugging Face Spaces / 24/7 Hosting
+# Keep-Alive Web Server for 24/7 Hosting
 async def start_web_server():
     from aiohttp import web
 
@@ -241,7 +291,7 @@ async def start_web_server():
             "status": "online",
             "bot": "EXILES AI",
             "guild_id": GUILD_ID,
-            "latency_ms": round(bot.latency * 1000) if bot.is_ready() else 0,
+            "tools_enabled": True,
             "timestamp": datetime.utcnow().isoformat()
         })
 
@@ -258,13 +308,18 @@ async def start_web_server():
 
 async def main():
     if not DISCORD_TOKEN:
-        logger.error("DISCORD_TOKEN is missing! Please provide it in .env or environment.")
+        logger.error("DISCORD_TOKEN is missing!")
         sys.exit(1)
 
-    await asyncio.gather(
-        start_web_server(),
-        bot.start(DISCORD_TOKEN)
-    )
+    await start_web_server()
+
+    # Smart start with fallback if Message Content Intent is not enabled in portal
+    try:
+        await bot.start(DISCORD_TOKEN)
+    except discord.errors.PrivilegedIntentsRequired:
+        logger.warning("Privileged intent missing. Falling back to compatibility mode...")
+        bot.intents.message_content = False
+        await bot.start(DISCORD_TOKEN)
 
 
 if __name__ == "__main__":
