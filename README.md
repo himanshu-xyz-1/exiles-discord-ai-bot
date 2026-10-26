@@ -1,3 +1,14 @@
+---
+title: Exiles Discord Bot
+emoji: 🛡️
+colorFrom: red
+colorTo: gray
+sdk: gradio
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 🛡️ EXILES AI — 24/7 Discord Operations Agent
 
 An intelligent, cloud-native Discord AI agent built for **EXILES** (Competitive Free Fire Clan & Gaming Guild). Powered by **Google Gemini 3.5 Flash** and **Discord.py**, designed to run 24/7 on free cloud platforms (Hugging Face Spaces, Koyeb, Docker) even when your PC is offline.
