@@ -35,19 +35,19 @@ DISCORD_TOOLS_SCHEMA = [
             },
             {
                 "name": "send_message",
-                "description": "Sends a standard text chat message to any text channel in the server.",
+                "description": "Sends a standard plain-text chat message to any channel. USE THIS BY DEFAULT whenever asked to send or post a message, unless the user explicitly requested an embed.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
                         "channel_name": {"type": "STRING", "description": "Target channel name (e.g. 'general', 'media')."},
-                        "message": {"type": "STRING", "description": "The exact message text to send."}
+                        "message": {"type": "STRING", "description": "The exact plain text message to send."}
                     },
                     "required": ["channel_name", "message"]
                 }
             },
             {
                 "name": "send_embed",
-                "description": "Sends a clean Crimson Red Discord Embed to any channel in the server.",
+                "description": "Sends a Crimson Red Discord Embed. USE THIS ONLY WHEN the user explicitly asks for an embed, card, or rich embed.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
