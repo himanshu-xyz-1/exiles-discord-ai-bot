@@ -24,7 +24,7 @@ logger = logging.getLogger("ExilesBot")
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API")
 GUILD_ID = int(os.getenv("GUILD_ID", "1562425772231360586"))
 FOUNDER_AI_CHANNEL_ID = int(os.getenv("FOUNDER_AI_CHANNEL_ID", "1564050092070142197"))
 PORT = int(os.getenv("PORT", "7860"))
